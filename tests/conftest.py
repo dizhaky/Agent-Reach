@@ -1,14 +1,146 @@
 # -*- coding: utf-8 -*-
-"""Suite-wide containment for tests that exercise user-facing installers."""
+"""Suite-wide containment and test isolation for Agent Reach."""
 
+from __future__ import annotations
+
+import atexit
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from agent_reach.config import Config
+# ── Import-Time Sandbox Isolation ──────────────────────────────────────────
+# Module collection and top-level module imports must never bind to the
+# operator's live Home, live config, or live runtime state.
+#
+# These MUST be plain assignment, never setdefault. setdefault defers to an
+# already-exported value, which makes the guard a no-op on a developer machine.
+_SESSION_SANDBOX = tempfile.TemporaryDirectory(prefix="agent-reach-test-sandbox-")
+atexit.register(_SESSION_SANDBOX.cleanup)
+_SANDBOX_PATH = _SESSION_SANDBOX.name
+
+os.environ["HOME"] = _SANDBOX_PATH
+os.environ["USERPROFILE"] = _SANDBOX_PATH
+os.environ["XDG_CONFIG_HOME"] = str(Path(_SANDBOX_PATH) / ".config")
+os.environ["APPDATA"] = str(Path(_SANDBOX_PATH) / "AppData" / "Roaming")
+os.environ["LOCALAPPDATA"] = str(Path(_SANDBOX_PATH) / "AppData" / "Local")
+os.environ.pop("OPENCLAW_HOME", None)
+
+HOME_AT_CONFTEST_IMPORT = os.environ.get("HOME")
+USERPROFILE_AT_CONFTEST_IMPORT = os.environ.get("USERPROFILE")
+XDG_CONFIG_HOME_AT_CONFTEST_IMPORT = os.environ.get("XDG_CONFIG_HOME")
+APPDATA_AT_CONFTEST_IMPORT = os.environ.get("APPDATA")
+LOCALAPPDATA_AT_CONFTEST_IMPORT = os.environ.get("LOCALAPPDATA")
+
+# ── Credential env-var filter ──────────────────────────────────────────────
+_CREDENTIAL_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_CREDENTIALS",
+    "_ACCESS_KEY",
+    "_PRIVATE_KEY",
+    "_OAUTH_TOKEN",
+    "_WEBHOOK_SECRET",
+    "_CLIENT_SECRET",
+)
+
+_CREDENTIAL_NAMES = frozenset({
+    "EXA_API_KEY",
+    "OPENAI_API_KEY",
+    "GROQ_API_KEY",
+    "GITHUB_TOKEN",
+    "TWITTER_AUTH_TOKEN",
+    "TWITTER_CT0",
+    "LINEAR_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "MISTRAL_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+    "SLACK_BOT_TOKEN",
+    "SLACK_USER_TOKEN",
+    "SLACK_APP_TOKEN",
+})
+
+
+def _is_credential(name: str) -> bool:
+    """True if name matches a credential pattern or explicit name."""
+    if name in _CREDENTIAL_NAMES:
+        return True
+    return any(name.endswith(suf) for suf in _CREDENTIAL_SUFFIXES)
+
+
+_is_credential_var = _is_credential
+
+
+# Scrub all credentials immediately at import time
+for _key in list(os.environ.keys()):
+    if _is_credential(_key):
+        os.environ.pop(_key, None)
+
+# ── Deterministic Runtime Variables ────────────────────────────────────────
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+os.environ["AWS_METADATA_SERVICE_TIMEOUT"] = "1"
+os.environ["AWS_METADATA_SERVICE_NUM_ATTEMPTS"] = "1"
+os.environ["TZ"] = "UTC"
+os.environ["LANG"] = "C.UTF-8"
+os.environ["LC_ALL"] = "C.UTF-8"
+os.environ["PYTHONHASHSEED"] = "0"
+
+# ── Module-Level macOS Security CLI Interceptor ─────────────────────────────
+_ORIG_WHICH = shutil.which
+_orig_subprocess_run = subprocess.run
+
+
+def _guarded_subprocess_run(args, *pargs, **kwargs):
+    cmd0 = ""
+    if isinstance(args, (list, tuple)) and args:
+        cmd0 = str(args[0])
+    elif isinstance(args, (str, bytes, os.PathLike)):
+        parts = str(args).split()
+        cmd0 = parts[0] if parts else ""
+
+    if Path(cmd0).name == "security":
+        check = kwargs.get("check", False)
+        is_text = kwargs.get("text") or kwargs.get("universal_newlines")
+        out = "" if is_text else b""
+        err = (
+            "Keychain access disabled in test suite"
+            if is_text
+            else b"Keychain access disabled in test suite"
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=args,
+                output=out,
+                stderr=err,
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout=out,
+            stderr=err,
+        )
+    return _orig_subprocess_run(args, *pargs, **kwargs)
+
+
+subprocess.run = _guarded_subprocess_run
+
+from agent_reach.config import Config  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clean_test_env(monkeypatch):
+    """Re-scrub credential environment variables before every single test."""
+    for key in list(os.environ.keys()):
+        if _is_credential(key):
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -35,7 +167,7 @@ def bash_executable() -> str:
                 (git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe")
             )
 
-        git = shutil.which("git")
+        git = _ORIG_WHICH("git")
         if git:
             git_parent = Path(git).resolve().parent
             if git_parent.name.lower() in {"bin", "cmd"}:
@@ -44,7 +176,7 @@ def bash_executable() -> str:
                     (git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe")
                 )
 
-    discovered = shutil.which("bash")
+    discovered = _ORIG_WHICH("bash")
     if discovered:
         candidates.append(Path(discovered))
 
