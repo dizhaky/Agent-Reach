@@ -1,0 +1,224 @@
+name: Auto-Merge Qualified PRs
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, unlabeled]
+  workflow_run:
+    workflows:
+      - CI
+      - ci
+      - Tests
+      - tests
+      - Lint
+      - lint
+      - Secret Scan
+      - secret-scan
+      - DeepSeek PR Review
+      - deepseek-review
+      - Auto-Label PRs
+      - Codex Review Webhook
+    types:
+      - completed
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: 'Pull request number (leave empty to evaluate all open PRs)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.event.inputs.pull_request_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    name: Auto-Merge
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      (github.event_name == 'workflow_run' && (github.event.workflow_run.head_repository.full_name == github.repository || github.event.workflow_run.head_repository == null))
+    steps:
+      - name: Evaluate and merge qualified PRs
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_PR: ${{ github.event.inputs.pull_request_number }}
+        run: |
+          set -euo pipefail
+
+          retry_with_backoff() {
+            local max_attempts=3
+            local timeout=1
+            local attempt=1
+            local exitcode=0
+            while [ "$attempt" -le "$max_attempts" ]; do
+              if "$@"; then
+                return 0
+              else
+                exitcode=$?
+              fi
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                echo "  attempt $attempt failed; retrying in ${timeout}s..."
+                sleep "$timeout"
+                timeout=$((timeout * 2))
+              fi
+              attempt=$((attempt + 1))
+            done
+            return "$exitcode"
+          }
+
+          PR_NUMBERS=""
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$INPUT_PR" ]; then
+              if ! echo "$INPUT_PR" | grep -qE '^[0-9]+( [0-9]+)*$'; then
+                echo "Error: PR numbers must be numeric and space-separated."
+                exit 1
+              fi
+              PR_NUMBERS="$INPUT_PR"
+            else
+              PR_NUMBERS=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' | tr '\n' ' ')
+            fi
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBERS="$EVENT_PR_NUMBER"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            PR_NUMBERS=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' | tr '\n' ' ')
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [ -n "$HEAD_SHA" ]; then
+              PR_NUMBERS=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[] | select(.state == "open") | .number' 2>/dev/null | tr '\n' ' ' || true)
+            fi
+            if [ -z "${PR_NUMBERS// /}" ] && [ -n "$HEAD_BRANCH" ]; then
+              PR_NUMBERS=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --state open --json number --jq '.[].number' 2>/dev/null | tr '\n' ' ' || true)
+            fi
+          fi
+
+          if [ -z "${PR_NUMBERS// /}" ]; then
+            echo "No open PRs to evaluate."
+            exit 0
+          fi
+
+          echo "Evaluating PR(s): $PR_NUMBERS"
+
+          for PR_NUMBER in $PR_NUMBERS; do
+            echo "=== Evaluating PR #$PR_NUMBER ==="
+
+            PR_JSON=$(retry_with_backoff gh pr view "$PR_NUMBER" --repo "$REPO" \
+              --json number,state,isDraft,headRefOid,headRepositoryOwner,author,labels,reviewDecision,mergeable) || {
+              echo "  ✗ could not read PR #$PR_NUMBER after retries"
+              continue
+            }
+
+            STATE=$(jq -r '.state' <<<"$PR_JSON")
+            IS_DRAFT=$(jq -r '.isDraft' <<<"$PR_JSON")
+            AUTHOR=$(jq -r '.author.login // empty' <<<"$PR_JSON")
+            HEAD_OWNER=$(jq -r '.headRepositoryOwner.login // empty' <<<"$PR_JSON")
+            REPO_OWNER=$(echo "$REPO" | cut -d'/' -f1)
+            REVIEW_DECISION=$(jq -r '.reviewDecision // empty' <<<"$PR_JSON")
+            MERGEABLE=$(jq -r '.mergeable // empty' <<<"$PR_JSON")
+            PR_SHA=$(jq -r '.headRefOid' <<<"$PR_JSON")
+            HAS_DO_NOT_MERGE=$(jq -r '[.labels[].name] | index("do-not-merge") // empty' <<<"$PR_JSON")
+
+            if [ "$STATE" != "OPEN" ]; then
+              echo "  ✗ PR state is $STATE (not OPEN) — skipping"
+              continue
+            fi
+
+            if [ "$IS_DRAFT" = "true" ]; then
+              echo "  ✗ PR is draft — skipping"
+              continue
+            fi
+
+            if [ "$AUTHOR" != "dizhaky" ]; then
+              echo "  ✗ PR author is '$AUTHOR' (required: dizhaky) — skipping"
+              continue
+            fi
+
+            if [ -n "$HEAD_OWNER" ] && [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then
+              echo "  ✗ PR is from fork ($HEAD_OWNER != $REPO_OWNER) — skipping"
+              continue
+            fi
+
+            if [ -n "$HAS_DO_NOT_MERGE" ]; then
+              echo "  ✗ PR has do-not-merge label — skipping"
+              continue
+            fi
+
+            if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ]; then
+              echo "  ✗ PR has CHANGES_REQUESTED review — skipping"
+              continue
+            fi
+
+            if [ "$MERGEABLE" = "CONFLICTING" ]; then
+              echo "  ✗ PR has merge conflicts (CONFLICTING) — skipping"
+              continue
+            fi
+
+            CHECK_RUNS_JSON=$(gh api "repos/$REPO/commits/$PR_SHA/check-runs?filter=latest" --paginate) || {
+              echo "  ✗ could not fetch check-runs for $PR_SHA"
+              continue
+            }
+
+            NON_AM_CHECKS=$(jq '[.check_runs[] | select(.name | test("auto-merge"; "i") | not)]' <<<"$CHECK_RUNS_JSON")
+            TOTAL_CHECKS=$(jq 'length' <<<"$NON_AM_CHECKS")
+
+            if [ "$TOTAL_CHECKS" -eq 0 ]; then
+              echo "  ✗ No CI check runs found on $PR_SHA yet — skipping"
+              continue
+            fi
+
+            INCOMPLETE_COUNT=$(jq '[.[] | select(.status != "completed")] | length' <<<"$NON_AM_CHECKS")
+            if [ "$INCOMPLETE_COUNT" -gt 0 ]; then
+              echo "  ✗ Check runs still pending/in-progress ($INCOMPLETE_COUNT of $TOTAL_CHECKS) — skipping"
+              continue
+            fi
+
+            FAILED_COUNT=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length' <<<"$NON_AM_CHECKS")
+            if [ "$FAILED_COUNT" -gt 0 ]; then
+              echo "  ✗ Check runs failed/non-green ($FAILED_COUNT of $TOTAL_CHECKS) — skipping"
+              continue
+            fi
+
+            STATUS_JSON=$(gh api "repos/$REPO/commits/$PR_SHA/status") || {
+              echo "  ✗ could not fetch commit status for $PR_SHA"
+              continue
+            }
+
+            STATUS_STATE=$(jq -r '.state' <<<"$STATUS_JSON")
+            STATUS_COUNT=$(jq -r '.total_count' <<<"$STATUS_JSON")
+
+            if [ "$STATUS_COUNT" -gt 0 ] && [ "$STATUS_STATE" != "success" ]; then
+              echo "  ✗ Combined commit status is '$STATUS_STATE' (not success) — skipping"
+              continue
+            fi
+
+            CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid)
+            if [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
+              echo "  ✗ PR head moved during checks ($PR_SHA -> $CURRENT_HEAD) — skipping"
+              continue
+            fi
+
+            echo "  ✓ All gates passed for PR #$PR_NUMBER @ $PR_SHA — merging (squash + delete branch)"
+            if retry_with_backoff gh pr merge "$PR_NUMBER" \
+              --repo "$REPO" \
+              --squash \
+              --match-head-commit "$PR_SHA" \
+              --delete-branch; then
+              echo "  ✓ Successfully merged PR #$PR_NUMBER"
+            else
+              echo "  ✗ Merge failed for PR #$PR_NUMBER"
+            fi
+          done
