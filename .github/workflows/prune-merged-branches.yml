@@ -1,0 +1,37 @@
+# Scheduled prune of head branches whose PR has merged.
+name: Prune Merged Branches
+
+on:
+  schedule:
+    - cron: "13,43 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete merged, unreferenced head branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH="$(gh api "repos/$REPO" --jq '.default_branch')"
+          open_heads="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].head.ref')"
+          gh api "repos/$REPO/branches?per_page=100" --paginate --jq '.[].name' \
+          | while IFS= read -r branch; do
+            [ "$branch" = "$DEFAULT_BRANCH" ] && continue
+            [ "$branch" = "main" ] || [ "$branch" = "master" ] && continue
+            if printf '%s\n' "$open_heads" | grep -qxF "$branch"; then echo "skip '$branch': head of an open PR"; continue; fi
+            enc="$(printf '%s' "$branch" | jq -sRr @uri)"
+            tip="$(gh api "repos/$REPO/git/ref/heads/$enc" --jq '.object.sha' 2>/dev/null || true)"
+            if [ -z "$tip" ]; then echo "skip '$branch': ref vanished mid-run"; continue; fi
+            merged_count="$(gh api "repos/$REPO/commits/$tip/pulls" --jq "[.[] | select(.merged_at != null and .base.ref == \"$DEFAULT_BRANCH\" and .head.ref == \"$branch\" and .head.sha == \"$tip\")] | length")"
+            if [ "$merged_count" -eq 0 ]; then echo "skip '$branch': tip $tip is not the head of a merged PR"; continue; fi
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$enc"
+            echo "deleted '$branch' (tip $tip, $merged_count merged PR(s))"
+          done
