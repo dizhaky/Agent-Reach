@@ -1,0 +1,38 @@
+name: Auto-Label PRs
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.pull_request.title.toLowerCase();
+            const author = context.payload.pull_request.user.login;
+            const labels = [];
+            if (title.startsWith('fix:') || title.startsWith('fix(')) labels.push('kind/bug');
+            else if (title.startsWith('feat:') || title.startsWith('feat(')) labels.push('kind/feature');
+            else if (title.startsWith('docs:') || title.startsWith('docs(')) labels.push('kind/docs');
+            else if (title.startsWith('chore:') || title.startsWith('chore(')) labels.push('kind/chore');
+            else if (title.startsWith('refactor:') || title.startsWith('refactor(')) labels.push('kind/refactor');
+            else if (title.startsWith('test:') || title.startsWith('test(')) labels.push('kind/test');
+            if (author === 'dependabot[bot]') {
+              if (title.includes('major')) labels.push('deps/major');
+              else labels.push('deps/patch-minor');
+            }
+            if (title.includes('caddy') || title.includes('proxy')) labels.push('area/caddy');
+            if (title.includes('bootstrap') || title.includes('install')) labels.push('area/bootstrap');
+            if (title.includes('security') || title.includes('auth')) labels.push('area/security');
+            if (title.includes('ci') || title.includes('workflow') || title.includes('action')) labels.push('area/ci');
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, labels: labels
+              });
+            }
