@@ -21,7 +21,8 @@ def test_integration_script_exercises_the_current_cli_contract():
     assert "agent-reach install --env=auto --safe" in text
     assert "agent-reach install --env=auto --system --dry-run" in text
     assert "agent-reach doctor --json" in text
-    assert 'pytest "$REPO_ROOT/tests" -q' in text
+    assert 'export PYTHONHASHSEED=0' in text
+    assert 'python "$REPO_ROOT/tests/run_pytest.py" "$REPO_ROOT/tests" -q' in text
 
     nonexistent_commands = (
         "agent-reach read ",

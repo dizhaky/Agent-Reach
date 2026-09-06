@@ -7,8 +7,8 @@ Repo: github.com/Panniantong/Agent-Reach | License: MIT | Version: 1.5.0
 
 ## Commands
 - `pip install -e .` — Dev install
-- `pytest tests/ -v` — All tests
-- `pytest tests/test_cli.py -v` — CLI tests only
+- `python tests/run_pytest.py tests/ -v` — All tests with deterministic hash seeding
+- `python tests/run_pytest.py tests/test_cli.py -v` — CLI tests only
 - `bash test.sh` — Full integration test (creates venv, installs, runs doctor + channel tests)
 - `python -m agent_reach.cli doctor` — Run diagnostics
 - `python -m agent_reach.cli install --env=auto` — Auto-configure
@@ -39,6 +39,6 @@ Repo: github.com/Panniantong/Agent-Reach | License: MIT | Version: 1.5.0
 - Agent Reach is a "glue layer" — only route and call, don't reimagine
 - Version in THREE places must match: `pyproject.toml`, `__init__.py`, `tests/test_cli.py`
 - Always new branch for changes, PR to main, never push to main directly
-- Run `pytest tests/ -v` before committing — all tests must pass
+- Run `python tests/run_pytest.py tests/ -v` before committing — all tests must pass
 - Cookie-based auth (Twitter, XHS): use Cookie-Editor export method only, no QR scan
 - XHS login: Cookie-Editor browser export only (QR will hang)

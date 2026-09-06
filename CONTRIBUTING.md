@@ -43,8 +43,8 @@ ruff format agent_reach tests
 # Type checking
 mypy agent_reach
 
-# Tests
-pytest
+# Tests (sets PYTHONHASHSEED before interpreter startup)
+python tests/run_pytest.py
 ```
 
 ## Adding New Channels

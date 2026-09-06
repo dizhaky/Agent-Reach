@@ -10,8 +10,12 @@ TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/agent-reach-test.XXXXXX")
 TEST_DIR=$(cd "$TEST_DIR" && pwd -P)
 export HOME="$TEST_DIR/home"
 export XDG_CONFIG_HOME="$HOME/.config"
+export XDG_CACHE_HOME="$HOME/.cache"
+export XDG_DATA_HOME="$HOME/.local/share"
+export XDG_STATE_HOME="$HOME/.local/state"
 export PYTHONDONTWRITEBYTECODE=1
-mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+export PYTHONHASHSEED=0
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 
 cleanup() {
     rm -rf -- "$TEST_DIR"
@@ -65,6 +69,6 @@ agent-reach doctor --json > "$TEST_DIR/doctor.json"
 python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert isinstance(data, dict) and data, "doctor returned no channels"; print(f"doctor OK: {len(data)} channels")' "$TEST_DIR/doctor.json"
 
 echo "[5/5] Running repository tests"
-pytest "$REPO_ROOT/tests" -q
+python "$REPO_ROOT/tests/run_pytest.py" "$REPO_ROOT/tests" -q
 
 echo "Agent Reach integration test passed"
