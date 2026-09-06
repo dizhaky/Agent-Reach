@@ -22,7 +22,7 @@ pip install -c constraints.txt -e '.[dev]'
 4. Run validation:
 
 ```bash
-pytest -q
+python tests/run_pytest.py -q
 ruff check agent_reach tests
 mypy agent_reach
 ```

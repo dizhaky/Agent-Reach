@@ -195,3 +195,11 @@ def test_security_cli_resolves_to_sandbox_shim() -> None:
     with pytest.raises(subprocess.CalledProcessError):
         subprocess.check_call([security])
     assert subprocess.call("security", shell=True) == 1
+
+
+def test_dependency_locking_uses_isolation_wrapper() -> None:
+    root = Path(__file__).resolve().parents[1]
+    path = root / "docs" / "dependency-locking.md"
+    text = path.read_text()
+    assert "\npython tests/run_pytest.py -q\n" in text
+    assert "\npytest -q\n" not in text
