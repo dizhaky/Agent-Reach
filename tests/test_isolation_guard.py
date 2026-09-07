@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,18 +20,23 @@ _SENTINEL_NAME = "AGENT-REACH-REAL-HOME-SENTINEL"
 
 def test_conftest_sandboxes_state_before_module_imports() -> None:
     """Verify that conftest.py redirects HOME and state directories at import time."""
-    from tests.conftest import (
-        APPDATA_AT_CONFTEST_IMPORT,
-        HOME_AT_CONFTEST_IMPORT,
-        LOCALAPPDATA_AT_CONFTEST_IMPORT,
-        USERPROFILE_AT_CONFTEST_IMPORT,
-        XDG_CONFIG_HOME_AT_CONFTEST_IMPORT,
-    )
+    conftest = sys.modules["conftest"]
+    APPDATA_AT_CONFTEST_IMPORT = conftest.APPDATA_AT_CONFTEST_IMPORT
+    HOME_AT_CONFTEST_IMPORT = conftest.HOME_AT_CONFTEST_IMPORT
+    LOCALAPPDATA_AT_CONFTEST_IMPORT = conftest.LOCALAPPDATA_AT_CONFTEST_IMPORT
+    USERPROFILE_AT_CONFTEST_IMPORT = conftest.USERPROFILE_AT_CONFTEST_IMPORT
+    XDG_CONFIG_HOME_AT_CONFTEST_IMPORT = conftest.XDG_CONFIG_HOME_AT_CONFTEST_IMPORT
+    XDG_CACHE_HOME_AT_CONFTEST_IMPORT = conftest.XDG_CACHE_HOME_AT_CONFTEST_IMPORT
+    XDG_DATA_HOME_AT_CONFTEST_IMPORT = conftest.XDG_DATA_HOME_AT_CONFTEST_IMPORT
+    XDG_STATE_HOME_AT_CONFTEST_IMPORT = conftest.XDG_STATE_HOME_AT_CONFTEST_IMPORT
 
     assert HOME_AT_CONFTEST_IMPORT, "conftest must set HOME at import time"
     assert "agent-reach-test-sandbox-" in HOME_AT_CONFTEST_IMPORT
     assert USERPROFILE_AT_CONFTEST_IMPORT == HOME_AT_CONFTEST_IMPORT
     assert XDG_CONFIG_HOME_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / ".config")
+    assert XDG_CACHE_HOME_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / ".cache")
+    assert XDG_DATA_HOME_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / ".local" / "share")
+    assert XDG_STATE_HOME_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / ".local" / "state")
     assert APPDATA_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / "AppData" / "Roaming")
     assert LOCALAPPDATA_AT_CONFTEST_IMPORT == str(Path(HOME_AT_CONFTEST_IMPORT) / "AppData" / "Local")
 
@@ -42,12 +48,15 @@ import os
 import sys
 
 sys.path.insert(0, {repr(str(TESTS_DIR))})
-from tests import conftest
+import conftest
+assert os.path.basename(conftest.ORIGINAL_LOCALAPPDATA) == "original-local-app-data"
 
 # Verify credential detection
 assert conftest._is_credential_var("EXA_API_KEY") is True
 assert conftest._is_credential_var("OPENAI_API_KEY") is True
 assert conftest._is_credential_var("TWITTER_AUTH_TOKEN") is True
+assert conftest._is_credential_var("XUEQIU_COOKIE") is True
+assert conftest._is_credential_var("CT0") is True
 assert conftest._is_credential_var("GITHUB_TOKEN") is True
 assert conftest._is_credential_var("CUSTOM_TEST_API_KEY") is True
 assert conftest._is_credential_var("SAFE_CONFIG_PATH") is False
@@ -56,6 +65,7 @@ print("GUARD_PROBE_PASSED")
     env = dict(os.environ)
     env["EXA_API_KEY"] = "sentinel-exa-key-12345"
     env["GITHUB_TOKEN"] = "sentinel-gh-token"
+    env["LOCALAPPDATA"] = "/tmp/original-local-app-data"
 
     result = subprocess.run(
         [sys.executable, "-c", probe_code],
@@ -80,6 +90,9 @@ def test_probe_child_binds_guarded_paths() -> None:
     assert _SENTINEL_NAME not in os.environ["HOME"]
     assert _SENTINEL_NAME not in os.environ["USERPROFILE"]
     assert _SENTINEL_NAME not in os.environ["XDG_CONFIG_HOME"]
+    assert _SENTINEL_NAME not in os.environ["XDG_CACHE_HOME"]
+    assert _SENTINEL_NAME not in os.environ["XDG_DATA_HOME"]
+    assert _SENTINEL_NAME not in os.environ["XDG_STATE_HOME"]
 
     # Credential env vars must be stripped by conftest at import time.
     assert "EXA_API_KEY" not in os.environ
@@ -88,6 +101,8 @@ def test_probe_child_binds_guarded_paths() -> None:
     assert "GITHUB_TOKEN" not in os.environ
     assert "TWITTER_AUTH_TOKEN" not in os.environ
     assert "TWITTER_CT0" not in os.environ
+    assert "XUEQIU_COOKIE" not in os.environ
+    assert "CT0" not in os.environ
     assert "LINEAR_API_KEY" not in os.environ
     assert "ANTHROPIC_API_KEY" not in os.environ
     assert "GEMINI_API_KEY" not in os.environ
@@ -103,6 +118,11 @@ def test_probe_child_binds_guarded_paths() -> None:
     assert os.environ.get("LC_ALL") == "C.UTF-8"
     assert os.environ.get("PYTHONHASHSEED") == "0"
     assert os.environ.get("AWS_EC2_METADATA_DISABLED") == "true"
+    expected_hash = subprocess.check_output(
+        [sys.executable, "-c", "print(hash('agent-reach-hash-probe'))"],
+        text=True,
+    ).strip()
+    assert str(hash("agent-reach-hash-probe")) == expected_hash
 
 
 def test_import_guard_beats_exported_env(tmp_path: Path) -> None:
@@ -115,12 +135,18 @@ def test_import_guard_beats_exported_env(tmp_path: Path) -> None:
         "HOME": str(sentinel / "home"),
         "USERPROFILE": str(sentinel / "userprofile"),
         "XDG_CONFIG_HOME": str(sentinel / "config"),
+        "XDG_CACHE_HOME": str(sentinel / "cache"),
+        "XDG_DATA_HOME": str(sentinel / "data"),
+        "XDG_STATE_HOME": str(sentinel / "state"),
+        "LOCALAPPDATA": str(sentinel / "original-local-app-data"),
         "EXA_API_KEY": "sentinel-exa-key",
         "OPENAI_API_KEY": "sentinel-openai-key",
         "GROQ_API_KEY": "sentinel-groq-key",
         "GITHUB_TOKEN": "sentinel-gh-token",
         "TWITTER_AUTH_TOKEN": "sentinel-tw-token",
         "TWITTER_CT0": "sentinel-tw-ct0",
+        "XUEQIU_COOKIE": "sentinel-xueqiu-cookie",
+        "CT0": "sentinel-legacy-ct0",
         "LINEAR_API_KEY": "sentinel-linear-key",
         "ANTHROPIC_API_KEY": "sentinel-anthropic-key",
         "GEMINI_API_KEY": "sentinel-gemini-key",
@@ -139,8 +165,7 @@ def test_import_guard_beats_exported_env(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "pytest",
+            str(TESTS_DIR / "run_pytest.py"),
             f"{__file__}::test_probe_child_binds_guarded_paths",
             "-q",
             "-p",
@@ -155,3 +180,26 @@ def test_import_guard_beats_exported_env(tmp_path: Path) -> None:
         "conftest import guard did not override an exported HOME or scrub credentials.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
+
+
+def test_security_cli_resolves_to_sandbox_shim() -> None:
+    """Every subprocess API must resolve security to the inert sandbox shim."""
+    security = shutil.which("security")
+    assert security is not None
+    assert "agent-reach-test-sandbox-" in security
+
+    process = subprocess.Popen([security], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process.communicate(timeout=5)
+    assert process.returncode == 1
+    assert subprocess.call([security]) == 1
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.check_call([security])
+    assert subprocess.call("security", shell=True) == 1
+
+
+def test_dependency_locking_uses_isolation_wrapper() -> None:
+    root = Path(__file__).resolve().parents[1]
+    path = root / "docs" / "dependency-locking.md"
+    text = path.read_text()
+    assert "\npython tests/run_pytest.py -q\n" in text
+    assert "\npytest -q\n" not in text

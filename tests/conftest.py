@@ -21,17 +21,38 @@ import pytest
 _SESSION_SANDBOX = tempfile.TemporaryDirectory(prefix="agent-reach-test-sandbox-")
 atexit.register(_SESSION_SANDBOX.cleanup)
 _SANDBOX_PATH = _SESSION_SANDBOX.name
+ORIGINAL_LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
 
 os.environ["HOME"] = _SANDBOX_PATH
 os.environ["USERPROFILE"] = _SANDBOX_PATH
 os.environ["XDG_CONFIG_HOME"] = str(Path(_SANDBOX_PATH) / ".config")
+os.environ["XDG_CACHE_HOME"] = str(Path(_SANDBOX_PATH) / ".cache")
+os.environ["XDG_DATA_HOME"] = str(Path(_SANDBOX_PATH) / ".local" / "share")
+os.environ["XDG_STATE_HOME"] = str(Path(_SANDBOX_PATH) / ".local" / "state")
 os.environ["APPDATA"] = str(Path(_SANDBOX_PATH) / "AppData" / "Roaming")
 os.environ["LOCALAPPDATA"] = str(Path(_SANDBOX_PATH) / "AppData" / "Local")
 os.environ.pop("OPENCLAW_HOME", None)
 
+_SHIM_DIR = Path(_SANDBOX_PATH) / "bin"
+_SHIM_DIR.mkdir()
+_SECURITY_SHIM = _SHIM_DIR / "security"
+_SECURITY_SHIM.write_text(
+    "#!/bin/sh\necho 'Keychain access disabled in test suite' >&2\nexit 1\n",
+    encoding="utf-8",
+)
+_SECURITY_SHIM.chmod(0o700)
+(_SHIM_DIR / "security.cmd").write_text(
+    "@echo off\necho Keychain access disabled in test suite 1>&2\nexit /b 1\n",
+    encoding="utf-8",
+)
+os.environ["PATH"] = str(_SHIM_DIR) + os.pathsep + os.environ.get("PATH", "")
+
 HOME_AT_CONFTEST_IMPORT = os.environ.get("HOME")
 USERPROFILE_AT_CONFTEST_IMPORT = os.environ.get("USERPROFILE")
 XDG_CONFIG_HOME_AT_CONFTEST_IMPORT = os.environ.get("XDG_CONFIG_HOME")
+XDG_CACHE_HOME_AT_CONFTEST_IMPORT = os.environ.get("XDG_CACHE_HOME")
+XDG_DATA_HOME_AT_CONFTEST_IMPORT = os.environ.get("XDG_DATA_HOME")
+XDG_STATE_HOME_AT_CONFTEST_IMPORT = os.environ.get("XDG_STATE_HOME")
 APPDATA_AT_CONFTEST_IMPORT = os.environ.get("APPDATA")
 LOCALAPPDATA_AT_CONFTEST_IMPORT = os.environ.get("LOCALAPPDATA")
 
@@ -56,6 +77,8 @@ _CREDENTIAL_NAMES = frozenset({
     "GITHUB_TOKEN",
     "TWITTER_AUTH_TOKEN",
     "TWITTER_CT0",
+    "XUEQIU_COOKIE",
+    "CT0",
     "LINEAR_API_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
@@ -160,7 +183,7 @@ def bash_executable() -> str:
                     (git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe")
                 )
 
-        local_app_data = os.environ.get("LOCALAPPDATA")
+        local_app_data = ORIGINAL_LOCALAPPDATA
         if local_app_data:
             git_root = Path(local_app_data) / "Programs" / "Git"
             candidates.extend(
@@ -210,6 +233,9 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
     monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("OPENCLAW_HOME", raising=False)
