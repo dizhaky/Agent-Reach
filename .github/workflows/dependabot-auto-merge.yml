@@ -1,34 +1,23 @@
-# Copy to repos/<name>/.github/workflows/dependabot-auto-merge.yml
-# Auto-merge safe Dependabot PRs (patch/minor for all ecosystems).
-# Major bumps are left open for manual review.
+# Legacy enrollment is retired. Only the central AI controller may queue PRs.
 name: Dependabot Auto-Merge
-
-on:
+'on':
   pull_request:
-    types: [opened, synchronize, reopened]
-
+    types:
+      - opened
+      - synchronize
+      - reopened
 permissions:
-  contents: write
-  pull-requests: write
-
+  contents: read
 jobs:
   auto-merge:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - name: Dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Auto-merge patch/minor bumps
-        if: >
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
-        run: >-
-          gh pr merge --auto --squash
-          --repo "${REPO}" "${PR_NUMBER}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Report retired local enrollment
+        run: |
+          printf '%s\n' \
+            'Legacy repository enrollment is retired.' \
+            'The central AI controller owns queue writes after verified review, tests, and native protection gates.' \
+            'This reporter cannot enroll, merge, convert drafts, or change repository settings.' \
+            >> "$GITHUB_STEP_SUMMARY"
